@@ -9,3 +9,6 @@ ROSzetta Self-hosted web application for managing MikroTik device fleets. Monito
 <p align="center">
   <img src="main.png" alt="Dashboard" width="100%">
 </p>
+<p align="center">
+  <img src="screen2.png" alt="Dashboard" width="100%">
+</p>

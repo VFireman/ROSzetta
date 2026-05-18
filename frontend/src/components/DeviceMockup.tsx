@@ -49,12 +49,182 @@ function findPort(interfaces: InterfaceInfo[], baseName: string): InterfaceInfo 
   return interfaces.find((x) => re.test(x.name));
 }
 
-// Цвета порта по статусу.
-function portColor(it: InterfaceInfo | undefined): { fill: string; stroke: string; label: string } {
-  if (!it)                  return { fill: '#0c0c0c', stroke: '#3a3a3a', label: 'нет данных' };
-  if (it.disabled)          return { fill: '#1a1a1a', stroke: '#5b5b5b', label: 'отключён' };
-  if (it.running)           return { fill: '#0a3a14', stroke: '#22c55e', label: 'up' };
-  return                          { fill: '#1a1a1a', stroke: '#ef4444', label: 'down' };
+// -------- Цветомаркировка скоростей линка --------
+//
+// Палитра единая для всех мокапов и легенд. Цвет берётся по link_speed:
+//   no link / disabled / нет данных → серый
+//   10  Mb/s                        → тёмно-зелёный
+//   100 Mb/s                        → бирюзовый
+//   1   Gb/s (и 2.5G)               → зелёный  (как RJ45 на пиктограмме)
+//   10  Gb/s (и 25G/40G/100G)       → фиолетовый
+//
+// link_speed приходит каноничной строкой ("10M", "100M", "1G", "2.5G", "10G", ...).
+
+interface SpeedPalette {
+  /** Главный цвет: используется как обводка иконки порта и LED. */
+  color: string;
+  /** Подпись для тултипа и легенды ("1 Gb/s", "no link"). */
+  label: string;
+}
+
+function speedToMbps(s?: string | null): number | null {
+  if (!s) return null;
+  const m = String(s).match(/^\s*(\d+(?:[.,]\d+)?)\s*([MG])\s*$/i);
+  if (!m) return null;
+  const v = parseFloat(m[1].replace(',', '.'));
+  if (!isFinite(v)) return null;
+  return m[2].toUpperCase() === 'G' ? v * 1000 : v;
+}
+
+function paletteForSpeed(mbps: number | null): SpeedPalette {
+  if (mbps == null)        return { color: '#9ca3af', label: 'no link'  };
+  if (mbps <= 10)          return { color: '#166534', label: '10 Mb/s'  };
+  if (mbps <= 100)         return { color: '#14b8a6', label: '100 Mb/s' };
+  if (mbps <= 2500)        return { color: '#22c55e', label: '1 Gb/s'   };
+  return                          { color: '#a855f7', label: '10 Gb/s'  };
+}
+
+/** Палитра порта: учитывает link_speed; при отсутствии — деградирует к running/down. */
+function portPalette(it: InterfaceInfo | undefined): SpeedPalette {
+  if (!it || it.disabled)     return { color: '#9ca3af', label: it?.disabled ? 'disabled' : 'нет данных' };
+  if (!it.running)            return { color: '#9ca3af', label: 'no link' };
+  const mbps = speedToMbps(it.link_speed);
+  if (mbps != null)           return paletteForSpeed(mbps);
+  // running, но link_speed нет (не ethernet или старая прошивка) — считаем «up» зелёным.
+  return                            { color: '#22c55e', label: 'up' };
+}
+
+// -------- Иконки портов (общие для всех мокапов) --------
+//
+// Стилизованный RJ45 — чёрный корпус, цветной контур, серые «пины» внутри,
+// сверху небольшой выступ-фиксатор. Внешний вид одинаков везде; меняется только
+// прямоугольник позиционирования (x, y, w, h) и сама палитра (из link_speed).
+
+interface PortIconExtras {
+  /** Дополнительный текст в тултипе (PoE in/out, 2.5G, Internet и т.п.). */
+  detail?: string;
+  /** Кастомное имя для отображения в тултипе, если интерфейс не найден. */
+  fallbackName?: string;
+}
+
+// Масштаб иконки относительно bounding-box, занимаемого портом в мокапе.
+// 0.65 = иконка на 35% меньше; центрируется внутри прежнего bbox.
+const PORT_ICON_SCALE = 0.65;
+
+function rj45SvgPort(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  it: InterfaceInfo | undefined,
+  extras: PortIconExtras = {},
+) {
+  const pal = portPalette(it);
+  // Уменьшаем иконку и центрируем её внутри переданного bbox.
+  const w = bw * PORT_ICON_SCALE;
+  const h = bh * PORT_ICON_SCALE;
+  const x = bx + (bw - w) / 2;
+  const y = by + (bh - h) / 2;
+  // Толщина обводки берётся от меньшей стороны, чтобы иконка оставалась пропорциональной.
+  const stroke = Math.max(1, Math.min(w, h) * 0.10);
+  // Координаты «фиксатора» — выступ сверху по центру: 40% ширины, 18% высоты.
+  const clipW = w * 0.40;
+  const clipH = h * 0.18;
+  const cx = x + w / 2;
+  const clipX = cx - clipW / 2;
+  const bodyTop = y + clipH;
+  const bodyH = h - clipH;
+  // Силуэт RJ45: фиксатор сверху + основной прямоугольник корпуса.
+  const path = [
+    `M ${clipX} ${y}`,
+    `L ${clipX + clipW} ${y}`,
+    `L ${clipX + clipW} ${bodyTop}`,
+    `L ${x + w} ${bodyTop}`,
+    `L ${x + w} ${y + h}`,
+    `L ${x} ${y + h}`,
+    `L ${x} ${bodyTop}`,
+    `L ${clipX} ${bodyTop}`,
+    'Z',
+  ].join(' ');
+  // 4 пина — строго симметричны относительно вертикальной оси корпуса.
+  const pinAreaW = w * 0.64;            // ширина зоны пинов = 64% от ширины корпуса
+  const pinAreaX = cx - pinAreaW / 2;   // центрирована
+  const pinW = pinAreaW * 0.13;
+  const pinGap = (pinAreaW - 4 * pinW) / 3;
+  const pinTop = bodyTop + bodyH * 0.42;
+  const pinH = bodyH * 0.42;
+  const pinColor = '#7a7a7a';
+  const name = it?.name || extras.fallbackName || '—';
+  const tooltipLines: string[] = [];
+  tooltipLines.push(extras.detail ? `${name} · ${extras.detail}` : name);
+  tooltipLines.push(`скорость: ${pal.label}`);
+  if (it?.comment) tooltipLines.push(`comment: ${it.comment}`);
+  if (it?.mac_address) tooltipLines.push(`mac: ${it.mac_address}`);
+  // Внешний ободок порта — всегда серый, не меняется по статусу.
+  // Цвет статуса/скорости отражает только внутренняя RJ45-иконка.
+  const bezelR = Math.max(1, Math.min(bw, bh) * 0.08);
+  const bezelStroke = Math.max(0.6, Math.min(bw, bh) * 0.06);
+  return (
+    <g>
+      {/* Постоянный серый ободок (как «металл» вокруг разъёма) */}
+      <rect
+        x={bx + bezelStroke / 2}
+        y={by + bezelStroke / 2}
+        width={bw - bezelStroke}
+        height={bh - bezelStroke}
+        rx={bezelR}
+        ry={bezelR}
+        fill="#0a0a0a"
+        stroke="#9ca3af"
+        strokeWidth={bezelStroke}
+      />
+      {/* Стилизованная RJ45-иконка внутри — цвет берётся из палитры скоростей */}
+      <path d={path} fill="#0a0a0a" stroke={pal.color} strokeWidth={stroke} strokeLinejoin="miter" />
+      {[0, 1, 2, 3].map((i) => (
+        <rect
+          key={i}
+          x={pinAreaX + i * (pinW + pinGap)}
+          y={pinTop}
+          width={pinW}
+          height={pinH}
+          fill={pinColor}
+        />
+      ))}
+      <title>{tooltipLines.join('\n')}</title>
+    </g>
+  );
+}
+
+function sfpSvgPort(
+  bx: number,
+  by: number,
+  bw: number,
+  bh: number,
+  it: InterfaceInfo | undefined,
+  extras: PortIconExtras = {},
+) {
+  const pal = portPalette(it);
+  const w = bw * PORT_ICON_SCALE;
+  const h = bh * PORT_ICON_SCALE;
+  const x = bx + (bw - w) / 2;
+  const y = by + (bh - h) / 2;
+  const stroke = Math.max(1, Math.min(w, h) * 0.10);
+  // Прямоугольная клетка SFP без верхнего выступа, с двумя тёмными полосами по бокам.
+  const sidebarW = w * 0.16;
+  const name = it?.name || extras.fallbackName || '—';
+  const tooltipLines: string[] = [];
+  tooltipLines.push(extras.detail ? `${name} · ${extras.detail}` : `${name} · SFP`);
+  tooltipLines.push(`скорость: ${pal.label}`);
+  if (it?.comment) tooltipLines.push(`comment: ${it.comment}`);
+  if (it?.mac_address) tooltipLines.push(`mac: ${it.mac_address}`);
+  return (
+    <g>
+      <rect x={x} y={y} width={w} height={h} fill="#0a0a0a" stroke={pal.color} strokeWidth={stroke} />
+      <rect x={x + stroke / 2} y={y + stroke / 2} width={sidebarW} height={h - stroke} fill="#1f1f1f" />
+      <rect x={x + w - sidebarW - stroke / 2} y={y + stroke / 2} width={sidebarW} height={h - stroke} fill="#1f1f1f" />
+      <title>{tooltipLines.join('\n')}</title>
+    </g>
+  );
 }
 
 export default function DeviceMockup({ boardName, interfaces }: DeviceMockupProps) {
@@ -180,7 +350,10 @@ function HapAcLiteMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {ports.map((p, i) => {
             const x = firstPortX + i * (portW + portGap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
+            const detail =
+              p.poe === 'in' ? `${p.label} · PoE in`
+              : p.poe === 'out' ? `${p.label} · PoE out`
+              : `LAN ${p.label}`;
             return (
               <g key={p.name}>
                 {/* Верхний лейбл (Internet / 2 / 3 / 4 / 5) */}
@@ -195,30 +368,10 @@ function HapAcLiteMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
                   {p.label}
                 </text>
 
-                {/* Корпус порта (металлический ободок) */}
-                <rect x={x} y={portsTopY} width={portW} height={portH} rx="6" fill="#d4d4d4" stroke="#888" strokeWidth="1.5" />
-                {/* Внутренний экран порта */}
-                <rect x={x + 8} y={portsTopY + 8} width={portW - 16} height={portH - 16} rx="3" fill={col.fill} stroke={col.stroke} strokeWidth="3" />
-                {/* RJ45 «зубчики» */}
-                <rect x={x + 24} y={portsTopY + 14} width={portW - 48} height="14" fill="#000" />
-                <rect x={x + 30} y={portsTopY + 28} width={portW - 60} height="8"  fill="#000" />
-                {/* LED-индикатор (точка) */}
-                <circle
-                  cx={x + portW - 18}
-                  cy={portsTopY + portH - 16}
-                  r="4"
-                  fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'}
-                />
-                {/* Имя интерфейса под портом для понятности */}
-                <text x={x + portW / 2} y={portsTopY + portH - 6} fontSize="10" fill="#999" textAnchor="middle">{p.name}</text>
+                {rj45SvgPort(x, portsTopY, portW, portH, it, { detail, fallbackName: p.name })}
 
-                {/* Тултип через <title> */}
-                <title>
-                  {p.name} ({p.label}){p.poe === 'in' ? ' · PoE in' : p.poe === 'out' ? ' · PoE out' : ''}
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
+                {/* Имя интерфейса под портом */}
+                <text x={x + portW / 2} y={portsTopY + portH + 14} fontSize="11" fill="#ffffff" textAnchor="middle">{p.name}</text>
               </g>
             );
           })}
@@ -230,18 +383,7 @@ function HapAcLiteMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
         </svg>
       </div>
 
-      {/* Легенда */}
-      <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-mk-mute">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-ok/30 ring-1 ring-mk-ok" /> up (running)
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-err/10 ring-1 ring-mk-err" /> down
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-panel2 ring-1 ring-mk-mute" /> disabled / нет данных
-        </span>
-      </div>
+      <MockupLegend />
     </div>
   );
 }
@@ -328,33 +470,14 @@ function HapAc2Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {ports.map((p, i) => {
             const x = firstPortX + i * (portW + portGap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
+            const detail = p.accent === 'poe-in' ? `${p.label} · Internet / PoE in` : `LAN ${p.label}`;
             return (
               <g key={p.name}>
-                {/* Металлический ободок RJ45 */}
-                <rect x={x} y={portsTopY} width={portW} height={portH} rx="6" fill="#c8c8c8" stroke="#666" strokeWidth="1.5" />
-                {/* Внутренний экран — закрашивается под статус */}
-                <rect x={x + 8} y={portsTopY + 8} width={portW - 16} height={portH - 16} rx="3" fill={col.fill} stroke={col.stroke} strokeWidth="3" />
-                {/* RJ45 «зубчики» */}
-                <rect x={x + 24} y={portsTopY + 16} width={portW - 48} height="18" fill="#000" />
-                <rect x={x + 32} y={portsTopY + 34} width={portW - 64} height="10" fill="#000" />
-                {/* LED-индикатор линка */}
-                <circle
-                  cx={x + portW - 18}
-                  cy={portsTopY + portH - 18}
-                  r="5"
-                  fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'}
-                />
-                {/* Имя интерфейса под портом — мелким шрифтом, чтобы не сливалось с подписями групп */}
-                <text x={x + portW / 2} y={portsTopY + portH + 16} fontSize="11" fill="#888" textAnchor="middle">
+                {rj45SvgPort(x, portsTopY, portW, portH, it, { detail, fallbackName: p.name })}
+                {/* Имя интерфейса под портом */}
+                <text x={x + portW / 2} y={portsTopY + portH + 16} fontSize="11" fill="#bbbbbb" textAnchor="middle">
                   {p.name}
                 </text>
-                <title>
-                  {p.name} (порт {p.label}){p.accent === 'poe-in' ? ' · Internet / PoE in' : ' · LAN'}
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
               </g>
             );
           })}
@@ -468,43 +591,25 @@ function Rb5009Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {ports.map((p, i) => {
             const x = portsStartX + i * (portW + gap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
+            const detail =
+              p.accent === 'poe' ? `порт ${p.label} · PoE in`
+              : p.accent === '2g5' ? `порт ${p.label} · 2.5 GbE`
+              : `порт ${p.label}`;
             return (
               <g key={p.name}>
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.5" />
-                <rect x={x + 6} y={portsY + 4} width={portW - 12} height="5" fill="#000" />
-                <circle cx={x + portW - 4} cy={portsY + portH - 4} r="1.3" fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'} />
-                <title>
-                  {p.name} (порт {p.label})
-                  {p.accent === 'poe' ? ' · PoE in' : ''}
-                  {p.accent === '2g5' ? ' · 2.5 GbE' : ''}
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail, fallbackName: p.name })}
               </g>
             );
           })}
 
           {/* SFP+ слот */}
           {(() => {
-            const col = portColor(sfp);
             return (
               <g>
                 <rect x={sfpX} y="1" width={sfpW} height="3" fill="#7c3aed" />
                 <text x={sfpX + sfpW / 2} y="10" fontSize="6" fill="#ffffff" fontWeight="800" textAnchor="middle">SFP+</text>
-                <rect x={sfpX} y={portsY} width={sfpW} height={portH} rx="2" fill="#1a1a1a" stroke="#666" strokeWidth="0.5" />
-                <rect x={sfpX + 3} y={portsY + 3} width={sfpW - 6} height={portH - 6} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.5" />
-                <rect x={sfpX + 3} y={portsY + 3} width="4" height={portH - 6} fill="#0a0a0a" />
-                <rect x={sfpX + sfpW - 7} y={portsY + 3} width="4" height={portH - 6} fill="#0a0a0a" />
-                <circle cx={sfpX + sfpW - 5} cy={portsY + portH - 4} r="1.3" fill={sfp?.running ? '#22c55e' : sfp?.disabled ? '#777' : '#5a1a1a'} />
+                {sfpSvgPort(sfpX, portsY, sfpW, portH, sfp, { detail: '10 GbE SFP+', fallbackName: 'sfp-sfpplus1' })}
                 <text x={sfpX + sfpW / 2} y={H - 2} fontSize="3.5" fill="#888" textAnchor="middle">10G SFP+</text>
-                <title>
-                  sfp-sfpplus1 · 10 GbE SFP+
-                  {'\n'}статус: {col.label}
-                  {sfp?.comment ? `\ncomment: ${sfp.comment}` : ''}
-                </title>
               </g>
             );
           })()}
@@ -578,22 +683,12 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
 
           {/* SFP+ слот */}
           {(() => {
-            const col = portColor(sfp);
             return (
               <g>
                 <rect x={sfpX} y="1" width={sfpW} height="3" fill="#7c3aed" />
                 <text x={sfpX + sfpW / 2} y="10" fontSize="5.5" fill="#ffffff" fontWeight="800" textAnchor="middle">SFP+</text>
-                <rect x={sfpX} y={portsY} width={sfpW} height={portH} rx="2" fill="#1a1a1a" stroke="#666" strokeWidth="0.5" />
-                <rect x={sfpX + 3} y={portsY + 3} width={sfpW - 6} height={portH - 6} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.5" />
-                <rect x={sfpX + 3} y={portsY + 3} width="4" height={portH - 6} fill="#0a0a0a" />
-                <rect x={sfpX + sfpW - 7} y={portsY + 3} width="4" height={portH - 6} fill="#0a0a0a" />
-                <circle cx={sfpX + sfpW - 5} cy={portsY + portH - 4} r="1.3" fill={sfp?.running ? '#22c55e' : sfp?.disabled ? '#777' : '#5a1a1a'} />
+                {sfpSvgPort(sfpX, portsY, sfpW, portH, sfp, { detail: '10 GbE SFP+', fallbackName: 'sfp-sfpplus1' })}
                 <text x={sfpX + sfpW / 2} y={H - 2} fontSize="3.5" fill="#aaaaaa" textAnchor="middle">SFP+ 10G</text>
-                <title>
-                  sfp-sfpplus1 · 10 GbE SFP+
-                  {'\n'}статус: {col.label}
-                  {sfp?.comment ? `\ncomment: ${sfp.comment}` : ''}
-                </title>
               </g>
             );
           })()}
@@ -614,20 +709,11 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {portsLeft.map((p, i) => {
             const x = group1StartX + i * (portW + gap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
             const isPoeIn = i === 0;
+            const detail = isPoeIn ? `порт ${p.label} · PoE in 18-57V` : `порт ${p.label}`;
             return (
               <g key={p.name}>
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.5" />
-                <rect x={x + 6} y={portsY + 4} width={portW - 12} height="5" fill="#000" />
-                <circle cx={x + portW - 4} cy={portsY + portH - 4} r="1.3" fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'} />
-                <title>
-                  {p.name} (порт {p.label}){isPoeIn ? ' · PoE in 18-57V' : ''}
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail, fallbackName: p.name })}
               </g>
             );
           })}
@@ -656,13 +742,15 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
                   const cx = lx + 3.5 + i * 4.2;
                   const top = findPort(interfaces, `ether${i + 1}`);
                   const bot = findPort(interfaces, `ether${i + 6}`);
+                  const tp = portPalette(top);
+                  const bp = portPalette(bot);
                   return (
                     <g key={`led-${i}`}>
-                      <circle cx={cx} cy={cy1} r="1.3" fill={top?.running ? '#22c55e' : top?.disabled ? '#444' : '#1f3f1f'}>
-                        <title>{top ? `ether${i + 1}: ${top.running ? 'up' : top.disabled ? 'disabled' : 'down'}` : `ether${i + 1}: нет данных`}</title>
+                      <circle cx={cx} cy={cy1} r="1.3" fill={tp.color}>
+                        <title>{`ether${i + 1}: ${tp.label}`}</title>
                       </circle>
-                      <circle cx={cx} cy={cy2} r="1.3" fill={bot?.running ? '#22c55e' : bot?.disabled ? '#444' : '#1f3f1f'}>
-                        <title>{bot ? `ether${i + 6}: ${bot.running ? 'up' : bot.disabled ? 'disabled' : 'down'}` : `ether${i + 6}: нет данных`}</title>
+                      <circle cx={cx} cy={cy2} r="1.3" fill={bp.color}>
+                        <title>{`ether${i + 6}: ${bp.label}`}</title>
                       </circle>
                     </g>
                   );
@@ -687,20 +775,11 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {portsRight.map((p, i) => {
             const x = group2StartX + i * (portW + gap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
             const isPoeOut = i === 4;
+            const detail = isPoeOut ? `порт ${p.label} · PoE out` : `порт ${p.label}`;
             return (
               <g key={p.name}>
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.5" />
-                <rect x={x + 6} y={portsY + 4} width={portW - 12} height="5" fill="#000" />
-                <circle cx={x + portW - 4} cy={portsY + portH - 4} r="1.3" fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'} />
-                <title>
-                  {p.name} (порт {p.label}){isPoeOut ? ' · PoE out' : ''}
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail, fallbackName: p.name })}
               </g>
             );
           })}
@@ -784,16 +863,17 @@ function Crs317Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
             const x = xOf(i);
             const it = findPort(interfaces, `sfp-sfpplus${i + 1}`)
                     || findPort(interfaces, `sfpplus${i + 1}`);
-            const actOn = !!it?.running;
+            const pal = portPalette(it);
+            const isLink = !!it?.running;
             return (
               <g key={`leds-${i}`}>
                 <text x={x + portW * 0.3} y="14" fontSize="3" fill="#444" textAnchor="middle" fontWeight="700">ACT</text>
                 <text x={x + portW * 0.7} y="14" fontSize="3" fill="#444" textAnchor="middle" fontWeight="700">10G</text>
-                {/* «коробочки» светодиодов */}
+                {/* «коробочки» светодиодов: цвет по скорости линка */}
                 <rect x={x + portW * 0.3 - 2.2} y={16} width={4.4} height={3.2} rx={0.5}
-                      fill={actOn ? '#22c55e' : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
+                      fill={isLink ? pal.color : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
                 <rect x={x + portW * 0.7 - 2.2} y={16} width={4.4} height={3.2} rx={0.5}
-                      fill={actOn ? '#22c55e' : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
+                      fill={isLink ? pal.color : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
               </g>
             );
           })}
@@ -803,27 +883,13 @@ function Crs317Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
             const x = xOf(i);
             const it = findPort(interfaces, `sfp-sfpplus${i + 1}`)
                     || findPort(interfaces, `sfpplus${i + 1}`);
-            const col = portColor(it);
             return (
               <g key={`sfp-${i}`}>
-                {/* Внешний металлический корпус слота */}
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#1a1a1a" stroke="#666" strokeWidth="0.5" />
-                {/* Внутренняя «начинка» — цвет по статусу */}
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1"
-                      fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
-                {/* Боковые тёмные полоски — стандартный «вид» SFP-клетки */}
-                <rect x={x + 2} y={portsY + 2} width="3" height={portH - 4} fill="#0a0a0a" />
-                <rect x={x + portW - 5} y={portsY + 2} width="3" height={portH - 4} fill="#0a0a0a" />
+                {sfpSvgPort(x, portsY, portW, portH, it, { detail: `SFP+${i + 1} · 10 GbE`, fallbackName: `sfp-sfpplus${i + 1}` })}
                 {/* Подпись «SFP+ i» под портом */}
                 <text x={x + portW / 2} y={H - 4} fontSize="3.5" fill="#555" textAnchor="middle" fontWeight="700">
                   SFP+{i + 1}
                 </text>
-                <title>
-                  {(it?.name) || `sfp-sfpplus${i + 1}`} · 10 GbE SFP+
-                  {'\n'}статус: {col.label}
-                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
               </g>
             );
           })}
@@ -843,26 +909,7 @@ function Crs317Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
 
                 {/* ETH/BOOT — управляющий Gigabit (ether1) */}
                 <text x={rightX + 12} y={ethY - 2} fontSize="3.5" fill="#444" textAnchor="middle" fontWeight="700">ETH/BOOT</text>
-                {(() => {
-                  const col = portColor(ethBoot);
-                  return (
-                    <g>
-                      <rect x={rightX} y={ethY} width="24" height="20" rx="2" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
-                      <rect x={rightX + 2} y={ethY + 2} width="20" height="16" rx="1"
-                            fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
-                      <rect x={rightX + 5} y={ethY + 4} width="14" height="4" fill="#000" />
-                      <circle cx={rightX + 4} cy={ethY + 17} r="1.4"
-                              fill={ethBoot?.running ? '#22c55e' : ethBoot?.disabled ? '#777' : '#5a1a1a'} />
-                      <circle cx={rightX + 20} cy={ethY + 17} r="1.4" fill={ethBoot?.running ? '#f59e0b' : '#3a3a3a'} />
-                      <title>
-                        {(ethBoot?.name) || 'ether1'} · ETH/BOOT (Gigabit, management)
-                        {'\n'}статус: {col.label}
-                        {ethBoot?.comment ? `\ncomment: ${ethBoot.comment}` : ''}
-                        {ethBoot?.mac_address ? `\nmac: ${ethBoot.mac_address}` : ''}
-                      </title>
-                    </g>
-                  );
-                })()}
+                {rj45SvgPort(rightX, ethY, 24, 20, ethBoot, { detail: 'ETH/BOOT (Gigabit, management)', fallbackName: 'ether1' })}
 
                 {/* RESET — утопленная кнопка */}
                 <circle cx={rightX + 38} cy={ethY + 10} r="2.6" fill="none" stroke="#888" strokeWidth="0.6" />
@@ -965,28 +1012,18 @@ function ChrMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           )}
           {ports.map((it, i) => {
             const x = portsStartX + i * (portW + gap);
-            const col = portColor(it);
+            const pal = portPalette(it);
             // Короткий лейбл — только номер порта (ether7 → "7").
             const num = (it.name.match(/(\d+)$/) || [, it.name])[1];
             return (
               <g key={it.name}>
-                {/* Корпус виртуального порта */}
-                <rect
-                  x={x}
-                  y={portsY}
-                  width={portW}
-                  height={portH}
-                  rx="3"
-                  fill={col.fill}
-                  stroke={col.stroke}
-                  strokeWidth="1.5"
-                />
-                {/* Номер порта внутри */}
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail: it.type || 'virtual', fallbackName: it.name })}
+                {/* Номер порта над иконкой */}
                 <text
                   x={x + portW / 2}
-                  y={portsY + portH / 2 + 4}
-                  fontSize="12"
-                  fill={it.running ? '#86efac' : it.disabled ? '#bbbbbb' : '#fca5a5'}
+                  y={portsY - 2}
+                  fontSize="8"
+                  fill={pal.color}
                   fontWeight="700"
                   textAnchor="middle"
                   fontFamily="monospace"
@@ -1004,32 +1041,13 @@ function ChrMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
                 >
                   {it.name}
                 </text>
-
-                <title>
-                  {it.name}
-                  {it.type ? ` · ${it.type}` : ''}
-                  {'\n'}статус: {col.label}
-                  {it.comment ? `\ncomment: ${it.comment}` : ''}
-                  {it.mac_address ? `\nmac: ${it.mac_address}` : ''}
-                </title>
               </g>
             );
           })}
         </svg>
       </div>
 
-      {/* Легенда */}
-      <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-mk-mute">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-ok/30 ring-1 ring-mk-ok" /> up (running)
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-err/10 ring-1 ring-mk-err" /> down
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-3 h-3 rounded-sm bg-mk-panel2 ring-1 ring-mk-mute" /> disabled / нет данных
-        </span>
-      </div>
+      <MockupLegend />
     </div>
   );
 }
@@ -1081,13 +1099,7 @@ function HexSMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           <text x="68" y="11" fontSize="5" fill="#ffffff" fontWeight="700">s</text>
 
           {/* SFP слот */}
-          <rect x="42" y="22" width="28" height="22" rx="2" fill="#0a0a0a" stroke="#555" strokeWidth="0.5" />
-          {(() => {
-            const col = portColor(sfp);
-            return <rect x="44" y="24" width="24" height="18" rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1">
-              <title>{sfp ? `${sfp.name} · SFP\nстатус: ${col.label}` : 'SFP · нет данных'}</title>
-            </rect>;
-          })()}
+          {sfpSvgPort(42, 22, 28, 22, sfp, { detail: 'SFP · Internet', fallbackName: 'sfp1' })}
           <text x="56" y="52" fontSize="4" fill="#aaaaaa" textAnchor="middle">SFP</text>
           <text x="56" y="58" fontSize="4" fill="#888888" textAnchor="middle" fontStyle="italic">INTERNET</text>
 
@@ -1114,14 +1126,13 @@ function HexSMockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {ports.map((p, i) => {
             const x = portsStartX + i * (portW + gap);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
+            const detail =
+              p.accent === 'poe-in' ? `порт ${p.label} · PoE in`
+              : p.accent === 'poe-out' ? `порт ${p.label} · PoE out`
+              : `порт ${p.label}`;
             return (
               <g key={p.name}>
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#d4d0c4" stroke="#666" strokeWidth="0.5" />
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
-                <rect x={x + 6} y={portsY + 4} width={portW - 12} height="5" fill="#000" />
-                <circle cx={x + portW - 4} cy={portsY + portH - 4} r="1.3" fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'} />
-                <title>{p.name} (порт {p.label}){p.accent === 'poe-in' ? ' · PoE in' : p.accent === 'poe-out' ? ' · PoE out' : ''}{'\n'}статус: {col.label}{it?.comment ? `\ncomment: ${it.comment}` : ''}</title>
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail, fallbackName: p.name })}
               </g>
             );
           })}
@@ -1195,13 +1206,7 @@ function L009Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
 
           {/* SFP слот */}
           <text x="60" y="9" fontSize="4" fill="#ffffff" fontWeight="700" textAnchor="middle">SFP</text>
-          <rect x="48" y="16" width="24" height="32" rx="1.5" fill="#0a0a0a" stroke="#888" strokeWidth="0.5" />
-          {(() => {
-            const col = portColor(sfp);
-            return <rect x="50" y="18" width="20" height="28" rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1">
-              <title>{sfp ? `${sfp.name} · SFP\nстатус: ${col.label}` : 'SFP · нет данных'}</title>
-            </rect>;
-          })()}
+          {sfpSvgPort(48, 16, 24, 32, sfp, { detail: 'SFP', fallbackName: 'sfp1' })}
           <text x="60" y="58" fontSize="3" fill="#ffffff" textAnchor="middle">SFP</text>
 
           {/* USB 3.0 */}
@@ -1226,14 +1231,13 @@ function L009Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           {ports.map((p, i) => {
             const x = xOf(i);
             const it = findPort(interfaces, p.name);
-            const col = portColor(it);
+            const detail =
+              p.accent === 'poe-in' ? `порт ${p.label} · PoE in`
+              : p.accent === 'poe-out' ? `порт ${p.label} · PoE out`
+              : `порт ${p.label}`;
             return (
               <g key={p.name}>
-                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#d4d0c4" stroke="#666" strokeWidth="0.5" />
-                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1" fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
-                <rect x={x + 6} y={portsY + 4} width={portW - 12} height="5" fill="#000" />
-                <circle cx={x + portW - 4} cy={portsY + portH - 4} r="1.3" fill={it?.running ? '#22c55e' : it?.disabled ? '#777' : '#5a1a1a'} />
-                <title>{p.name} (порт {p.label}){p.accent === 'poe-in' ? ' · PoE in' : p.accent === 'poe-out' ? ' · PoE out' : ''}{'\n'}статус: {col.label}{it?.comment ? `\ncomment: ${it.comment}` : ''}</title>
+                {rj45SvgPort(x, portsY, portW, portH, it, { detail, fallbackName: p.name })}
               </g>
             );
           })}
@@ -1248,19 +1252,27 @@ function L009Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
   );
 }
 
-// Общая мини-легенда для физических мокапов.
+// Общая мини-легенда для физических мокапов — цветомаркировка скоростей.
+const SPEED_LEGEND: { color: string; label: string }[] = [
+  { color: '#9ca3af', label: 'no link' },
+  { color: '#166534', label: '10 Mb/s' },
+  { color: '#14b8a6', label: '100 Mb/s' },
+  { color: '#22c55e', label: '1 Gb/s' },
+  { color: '#a855f7', label: '10 Gb/s' },
+];
+
 function MockupLegend() {
   return (
     <div className="flex flex-wrap items-center gap-3 mt-2 text-[10px] text-mk-mute">
-      <span className="inline-flex items-center gap-1">
-        <span className="inline-block w-2 h-2 rounded-sm bg-mk-ok/30 ring-1 ring-mk-ok" /> up
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <span className="inline-block w-2 h-2 rounded-sm bg-mk-err/10 ring-1 ring-mk-err" /> down
-      </span>
-      <span className="inline-flex items-center gap-1">
-        <span className="inline-block w-2 h-2 rounded-sm bg-mk-panel2 ring-1 ring-mk-mute" /> disabled
-      </span>
+      {SPEED_LEGEND.map((s) => (
+        <span key={s.label} className="inline-flex items-center gap-1">
+          <span
+            className="inline-block w-3 h-3 rounded-sm border-2"
+            style={{ borderColor: s.color, backgroundColor: '#0a0a0a' }}
+          />
+          {s.label}
+        </span>
+      ))}
     </div>
   );
 }

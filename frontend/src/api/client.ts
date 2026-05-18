@@ -57,6 +57,9 @@ export interface InterfaceInfo {
   type: string | null;
   comment: string | null;
   mac_address?: string | null;
+  /** Текущая скорость линка: "10M", "100M", "1G", "2.5G", "10G".
+   *  null — порт не ethernet, нет линка, или устройство не дало monitor. */
+  link_speed?: string | null;
 }
 
 export interface InterfaceTrafficPoint {

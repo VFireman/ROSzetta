@@ -87,10 +87,17 @@ def fetch_interfaces(creds: RouterOSCredentials) -> list[dict[str, Any]]:
 
 
 def cmd_reboot(creds: RouterOSCredentials) -> None:
-    """Перезагрузить устройство (/system/reboot)."""
+    """Перезагрузить устройство (/system/reboot).
+
+    Команды RouterOS API (а не path/print) выполняются через api(cmd=...).
+    Итерация по api.path("system","reboot") даёт TrapError 'no such command',
+    потому что /system/reboot — это действие, а не каталог записей."""
     logger.info("Sending reboot to {}:{}", creds.host, creds.port)
-    with routeros_session(creds) as api:
-        tuple(api.path("system", "reboot"))
+    try:
+        with routeros_session(creds) as api:
+            tuple(api(cmd="/system/reboot"))
+    except (LibRouterosError, OSError) as exc:
+        raise RouterOSError(f"reboot failed: {exc}") from exc
 
 
 def cmd_safe_mode(creds: RouterOSCredentials) -> None:
@@ -98,8 +105,11 @@ def cmd_safe_mode(creds: RouterOSCredentials) -> None:
     подтвердит переход (RouterOS 7+). Если устройство уже в safe mode,
     команда завершает его."""
     logger.info("Toggling safe-mode on {}:{}", creds.host, creds.port)
-    with routeros_session(creds) as api:
-        tuple(api.path("system", "safe-mode"))
+    try:
+        with routeros_session(creds) as api:
+            tuple(api(cmd="/system/safe-mode"))
+    except (LibRouterosError, OSError) as exc:
+        raise RouterOSError(f"safe-mode failed: {exc}") from exc
 
 
 def check_internet(creds: RouterOSCredentials, target: str = "8.8.8.8") -> bool:
@@ -170,14 +180,85 @@ def execute_cli(creds: RouterOSCredentials, command: str) -> list[dict[str, Any]
 
 # ---------- Sprint 09 helpers ----------
 
-def fetch_interface_stats(creds: RouterOSCredentials) -> list[dict[str, Any]]:
-    """Список интерфейсов со счётчиками rx/tx и флагом running.
+def _normalize_link_rate(rate: Any) -> str | None:
+    """Привести значение `rate` от RouterOS monitor к каноничным строкам:
+    "10M", "100M", "1G", "2.5G", "5G", "10G", "25G", "40G", "100G".
+    Возвращает None, если значение пустое/нераспознано."""
+    if rate is None:
+        return None
+    s = str(rate).strip()
+    if not s:
+        return None
+    import re
+    m = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*(M|G)bps\s*$", s, re.IGNORECASE)
+    if not m:
+        return None
+    value = m.group(1).replace(",", ".")
+    unit = m.group(2).upper()
+    if "." in value:
+        try:
+            num = float(value)
+            if num.is_integer():
+                value = str(int(num))
+            else:
+                value = ("%g" % num)
+        except ValueError:
+            pass
+    return f"{value}{unit}"
 
-    Возвращает: [{"name", "rx_bytes", "tx_bytes", "running", "type", "comment"}].
+
+def _fetch_ethernet_link_speeds(api: Any) -> dict[str, str | None]:
+    """Через `/interface/ethernet/monitor once=` собрать текущую скорость линка
+    для всех ethernet-портов. Возвращает {name -> "1G" / "100M" / None}.
+
+    Любые ошибки RouterOS глушим — это best-effort обогащение.
+    """
+    speeds: dict[str, str | None] = {}
+    try:
+        eth_rows = list(api.path("interface", "ethernet"))
+    except Exception as exc:
+        logger.debug("ethernet list failed: {}", exc)
+        return speeds
+
+    numbers: list[str] = []
+    for r in eth_rows:
+        rid = r.get(".id")
+        if rid:
+            numbers.append(str(rid))
+    if not numbers:
+        return speeds
+
+    try:
+        # librouteros: `=once=` передаётся как пустая строка
+        rows = list(api(cmd="/interface/ethernet/monitor",
+                        **{"numbers": ",".join(numbers), "once": ""}))
+    except Exception as exc:
+        logger.debug("ethernet monitor failed: {}", exc)
+        return speeds
+
+    for row in rows:
+        name = row.get("name")
+        if not name:
+            continue
+        status = str(row.get("status", "")).lower()
+        rate = row.get("rate")
+        if status in {"no-link", "disabled"}:
+            speeds[name] = None
+            continue
+        speeds[name] = _normalize_link_rate(rate)
+    return speeds
+
+
+def fetch_interface_stats(creds: RouterOSCredentials) -> list[dict[str, Any]]:
+    """Список интерфейсов со счётчиками rx/tx, флагом running и текущей скоростью линка.
+
+    Поле `link_speed` — каноничная строка ("10M"/"100M"/"1G"/"10G"/...) либо None,
+    если порт не ethernet, нет линка, или устройство не дало monitor.
     """
     out: list[dict[str, Any]] = []
     try:
         with routeros_session(creds) as api:
+            link_speeds = _fetch_ethernet_link_speeds(api)
             for r in api.path("interface"):
                 def _i(v: Any) -> int:
                     try:
@@ -186,8 +267,10 @@ def fetch_interface_stats(creds: RouterOSCredentials) -> list[dict[str, Any]]:
                         return 0
                 running = str(r.get("running", "")).lower() == "true"
                 disabled = str(r.get("disabled", "")).lower() == "true"
+                name = r.get("name")
+                link_speed = link_speeds.get(name) if running and not disabled else None
                 out.append({
-                    "name": r.get("name"),
+                    "name": name,
                     "rx_bytes": _i(r.get("rx-byte")),
                     "tx_bytes": _i(r.get("tx-byte")),
                     "running": running,
@@ -195,6 +278,7 @@ def fetch_interface_stats(creds: RouterOSCredentials) -> list[dict[str, Any]]:
                     "type": r.get("type"),
                     "comment": r.get("comment") or None,
                     "mac_address": r.get("mac-address") or None,
+                    "link_speed": link_speed,
                 })
     except (LibRouterosError, OSError) as exc:
         raise RouterOSError(f"interface stats failed: {exc}") from exc
