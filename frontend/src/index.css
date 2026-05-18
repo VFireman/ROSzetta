@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Темы оформления ──────────────────────────────────────────────── */
+/* Значения цветов хранятся как raw "R G B", чтобы Tailwind мог применять opacity-модификаторы (/15 и т.п.) */
+/* По умолчанию — ROSzetta Dark */
+:root,
+[data-theme='mk-dark'],
+[data-theme='unifi-dark'] {
+  --c-bg:      11 15 23;
+  --c-panel:   17 22 34;
+  --c-panel2:  24 31 46;
+  --c-border:  38 47 65;
+  --c-text:    230 236 245;
+  --c-mute:    130 145 170;
+  --c-accent:  37 99 235;
+  --c-accent2: 59 130 246;
+  --c-ok:      34 197 94;
+  --c-warn:    245 158 11;
+  --c-err:     239 68 68;
+}
+/* VS Code Abyss */
+[data-theme='abyss'] {
+  --c-bg:      0 12 24;
+  --c-panel:   5 19 54;
+  --c-panel2:  8 34 82;
+  --c-border:  19 68 151;
+  --c-text:    102 136 204;
+  --c-mute:    64 99 133;
+  --c-accent:  47 126 255;
+  --c-accent2: 77 156 255;
+  --c-ok:      34 197 94;
+  --c-warn:    245 158 11;
+  --c-err:     255 83 112;
+}
+/* Midnight (тёмно-синий) */
+[data-theme='midnight'] {
+  --c-bg:      10 15 31;
+  --c-panel:   18 26 48;
+  --c-panel2:  26 35 64;
+  --c-border:  36 48 89;
+  --c-text:    216 222 240;
+  --c-mute:    119 133 168;
+  --c-accent:  91 108 255;
+  --c-accent2: 138 150 255;
+  --c-ok:      34 197 94;
+  --c-warn:    245 158 11;
+  --c-err:     239 68 68;
+}
+/* Dracula-like */
+[data-theme='dracula'] {
+  --c-bg:      40 42 54;
+  --c-panel:   52 55 70;
+  --c-panel2:  61 64 83;
+  --c-border:  74 77 99;
+  --c-text:    248 248 242;
+  --c-mute:    138 141 166;
+  --c-accent:  189 147 249;
+  --c-accent2: 255 121 198;
+  --c-ok:      80 250 123;
+  --c-warn:    241 250 140;
+  --c-err:     255 85 85;
+}
+/* Light */
+[data-theme='light'] {
+  --c-bg:      255 255 255;
+  --c-panel:   245 246 248;
+  --c-panel2:  236 239 244;
+  --c-border:  214 218 226;
+  --c-text:    26 32 44;
+  --c-mute:    107 114 128;
+  --c-accent:  5 89 201;
+  --c-accent2: 27 120 255;
+  --c-ok:      22 163 74;
+  --c-warn:    217 119 6;
+  --c-err:     220 38 38;
+}
+/* Solarized Light */
+[data-theme='solarized-light'] {
+  --c-bg:      253 246 227;
+  --c-panel:   238 232 213;
+  --c-panel2:  227 220 198;
+  --c-border:  211 205 179;
+  --c-text:    7 54 66;
+  --c-mute:    88 110 117;
+  --c-accent:  38 139 210;
+  --c-accent2: 42 161 152;
+  --c-ok:      133 153 0;
+  --c-warn:    181 137 0;
+  --c-err:     220 50 47;
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    background-color: var(--c-bg);
+    color: var(--c-text);
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md
+           text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary { @apply btn bg-mk-accent hover:bg-mk-accent2 text-white; }
+  .btn-ghost   { @apply btn bg-transparent hover:bg-mk-panel2 text-mk-text border border-mk-border; }
+
+  .card {
+    @apply bg-mk-panel border border-mk-border rounded-xl p-3 sm:p-5;
+  }
+  .table-wrap {
+    @apply -mx-3 sm:mx-0 overflow-x-auto;
+  }
+  .table-wrap > table {
+    @apply min-w-[640px] w-full;
+  }
+  .input {
+    @apply w-full bg-mk-panel2 border border-mk-border rounded-md px-3 py-2 text-sm
+           placeholder-mk-mute focus:outline-none focus:border-mk-accent2;
+  }
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .badge-up   { @apply badge bg-mk-ok/15 text-mk-ok; }
+  .badge-down { @apply badge bg-mk-err/15 text-mk-err; }
+  .badge-unk  { @apply badge bg-mk-mute/15 text-mk-mute; }
+}

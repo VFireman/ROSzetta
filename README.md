@@ -1,0 +1,1 @@
+ROSzetta Self-hosted web application for managing MikroTik device fleets. Monitor, configure, upgrade, and backup your devices from a single dashboard with real-time updates.

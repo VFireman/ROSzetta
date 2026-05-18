@@ -1,0 +1,3 @@
+sudo apt install docker-compose-v2 git -y
+git clone https://git.core.uz/mikrotik/ROSzetta.git
+sudo docker compose up -d --build

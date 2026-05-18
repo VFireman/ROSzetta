@@ -1,0 +1,31 @@
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+.cache/
+.parcel-cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Build / coverage
+build/
+coverage/
+*.log
