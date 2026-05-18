@@ -36,6 +36,10 @@ const isL009 = (b?: string | null): boolean =>
 const isRb4011 = (b?: string | null): boolean =>
   !!b && /RB?\s*4011/i.test(b);
 
+// CRS317-1G-16S+ — белый 1U-свич: 16×SFP+ + 1 GigE (ETH/BOOT).
+const isCrs317 = (b?: string | null): boolean =>
+  !!b && /CRS\s*317(?:-?\s*1G)?(?:-?\s*16S)?/i.test(b);
+
 // Найти интерфейс по базовому имени, допуская суффиксы вида `ether1-Uztelecom`,
 // `ether2_LAN`, `ether3 description` и т.п. Сначала пробуем точное совпадение, потом по префиксу.
 function findPort(interfaces: InterfaceInfo[], baseName: string): InterfaceInfo | undefined {
@@ -68,6 +72,9 @@ export default function DeviceMockup({ boardName, interfaces }: DeviceMockupProp
   }
   if (isRb4011(boardName)) {
     return <Rb4011Mockup interfaces={interfaces} />;
+  }
+  if (isCrs317(boardName)) {
+    return <Crs317Mockup interfaces={interfaces} />;
   }
   if (isHexS(boardName)) {
     return <HexSMockup interfaces={interfaces} />;
@@ -709,6 +716,193 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
           >
             PoE out
           </text>
+        </svg>
+      </div>
+      <MockupLegend />
+    </div>
+  );
+}
+
+// --------- CRS317-1G-16S+ ---------
+// Белый 1U-свич: 16 портов SFP+ в 4 группах по 4, над каждым портом пара
+// светодиодов ACT и 10G. Справа: CONSOLE (RJ45), ETH/BOOT (Gigabit RJ45
+// для управления = ether1), кнопка RESET и блок статусных LED (USR,
+// FAULT, PWR2, PWR1). Имена SFP-портов в RouterOS — sfp-sfpplus1…16.
+
+function Crs317Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
+  const W = 700, H = 66;
+  const portW = 28, portH = 26, gap = 3;
+  const groupGap = 8;
+  const portsY = 28;
+  const portsStartX = 78;
+
+  // Управляющий Gigabit-порт ETH/BOOT = ether1. Допускаем альт-имена на случай переименования.
+  const ethBoot =
+    findPort(interfaces, 'ether1') ||
+    findPort(interfaces, 'eth1') ||
+    findPort(interfaces, 'boot');
+
+  // Группа из 4 портов: индексы 0..3, 4..7, 8..11, 12..15. Между группами — groupGap.
+  const xOf = (i: number) => portsStartX + i * (portW + gap) + Math.floor(i / 4) * groupGap;
+
+  return (
+    <div className="card">
+      <div className="text-xs text-mk-mute mb-2">
+        Лицевая панель <b>CRS317-1G-16S+</b> · подсветка портов в реальном времени
+      </div>
+      <div className="overflow-x-auto">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ width: `${W}px`, height: '66px', maxWidth: '100%', display: 'block' }}
+          preserveAspectRatio="xMinYMid meet"
+        >
+          {/* Белый корпус */}
+          <rect x="1" y="1" width={W - 2} height={H - 2} rx="3" fill="#f4f4f1" stroke="#bdbdb6" strokeWidth="1" />
+
+          {/* Левая декоративная зона: 4 ряда вентиляционных решёток (по числу групп портов) */}
+          {Array.from({ length: 4 }).map((_, gi) => {
+            const gx = portsStartX + gi * (4 * (portW + gap) + groupGap) - 4;
+            return (
+              <g key={`vent-${gi}`} opacity="0.85">
+                {Array.from({ length: 16 }).map((__, vi) => (
+                  <rect
+                    key={vi}
+                    x={gx + vi * 7}
+                    y={6}
+                    width={4}
+                    height={1.2}
+                    fill="#8e8e88"
+                  />
+                ))}
+              </g>
+            );
+          })}
+
+          {/* Лейблы ACT / 10G над каждым портом + сами светодиоды */}
+          {Array.from({ length: 16 }).map((_, i) => {
+            const x = xOf(i);
+            const it = findPort(interfaces, `sfp-sfpplus${i + 1}`)
+                    || findPort(interfaces, `sfpplus${i + 1}`);
+            const actOn = !!it?.running;
+            return (
+              <g key={`leds-${i}`}>
+                <text x={x + portW * 0.3} y="14" fontSize="3" fill="#444" textAnchor="middle" fontWeight="700">ACT</text>
+                <text x={x + portW * 0.7} y="14" fontSize="3" fill="#444" textAnchor="middle" fontWeight="700">10G</text>
+                {/* «коробочки» светодиодов */}
+                <rect x={x + portW * 0.3 - 2.2} y={16} width={4.4} height={3.2} rx={0.5}
+                      fill={actOn ? '#22c55e' : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
+                <rect x={x + portW * 0.7 - 2.2} y={16} width={4.4} height={3.2} rx={0.5}
+                      fill={actOn ? '#22c55e' : '#dadad4'} stroke="#9c9c95" strokeWidth="0.3" />
+              </g>
+            );
+          })}
+
+          {/* SFP+ слоты (16 шт.) */}
+          {Array.from({ length: 16 }).map((_, i) => {
+            const x = xOf(i);
+            const it = findPort(interfaces, `sfp-sfpplus${i + 1}`)
+                    || findPort(interfaces, `sfpplus${i + 1}`);
+            const col = portColor(it);
+            return (
+              <g key={`sfp-${i}`}>
+                {/* Внешний металлический корпус слота */}
+                <rect x={x} y={portsY} width={portW} height={portH} rx="2" fill="#1a1a1a" stroke="#666" strokeWidth="0.5" />
+                {/* Внутренняя «начинка» — цвет по статусу */}
+                <rect x={x + 2} y={portsY + 2} width={portW - 4} height={portH - 4} rx="1"
+                      fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
+                {/* Боковые тёмные полоски — стандартный «вид» SFP-клетки */}
+                <rect x={x + 2} y={portsY + 2} width="3" height={portH - 4} fill="#0a0a0a" />
+                <rect x={x + portW - 5} y={portsY + 2} width="3" height={portH - 4} fill="#0a0a0a" />
+                {/* Подпись «SFP+ i» под портом */}
+                <text x={x + portW / 2} y={H - 4} fontSize="3.5" fill="#555" textAnchor="middle" fontWeight="700">
+                  SFP+{i + 1}
+                </text>
+                <title>
+                  {(it?.name) || `sfp-sfpplus${i + 1}`} · 10 GbE SFP+
+                  {'\n'}статус: {col.label}
+                  {it?.comment ? `\ncomment: ${it.comment}` : ''}
+                  {it?.mac_address ? `\nmac: ${it.mac_address}` : ''}
+                </title>
+              </g>
+            );
+          })}
+
+          {/* Правая колонка: CONSOLE, ETH/BOOT, RESET, статусные LED, лого */}
+          {(() => {
+            const rightX = portsStartX + 16 * (portW + gap) + 3 * groupGap + 6;
+            const consoleY = 18;
+            const ethY = 38;
+            return (
+              <g>
+                {/* CONSOLE — RJ45 для serial */}
+                <text x={rightX + 12} y="14" fontSize="3.5" fill="#444" textAnchor="middle" fontWeight="700">CONSOLE</text>
+                <rect x={rightX} y={consoleY} width="24" height="14" rx="1.5" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
+                <rect x={rightX + 4} y={consoleY + 3} width="16" height="8" fill="#0a0a0a" />
+                <rect x={rightX + 8} y={consoleY + 6} width="8" height="2.5" fill="#222" />
+
+                {/* ETH/BOOT — управляющий Gigabit (ether1) */}
+                <text x={rightX + 12} y={ethY - 2} fontSize="3.5" fill="#444" textAnchor="middle" fontWeight="700">ETH/BOOT</text>
+                {(() => {
+                  const col = portColor(ethBoot);
+                  return (
+                    <g>
+                      <rect x={rightX} y={ethY} width="24" height="20" rx="2" fill="#c8c8c8" stroke="#666" strokeWidth="0.5" />
+                      <rect x={rightX + 2} y={ethY + 2} width="20" height="16" rx="1"
+                            fill={col.fill} stroke={col.stroke} strokeWidth="1.2" />
+                      <rect x={rightX + 5} y={ethY + 4} width="14" height="4" fill="#000" />
+                      <circle cx={rightX + 4} cy={ethY + 17} r="1.4"
+                              fill={ethBoot?.running ? '#22c55e' : ethBoot?.disabled ? '#777' : '#5a1a1a'} />
+                      <circle cx={rightX + 20} cy={ethY + 17} r="1.4" fill={ethBoot?.running ? '#f59e0b' : '#3a3a3a'} />
+                      <title>
+                        {(ethBoot?.name) || 'ether1'} · ETH/BOOT (Gigabit, management)
+                        {'\n'}статус: {col.label}
+                        {ethBoot?.comment ? `\ncomment: ${ethBoot.comment}` : ''}
+                        {ethBoot?.mac_address ? `\nmac: ${ethBoot.mac_address}` : ''}
+                      </title>
+                    </g>
+                  );
+                })()}
+
+                {/* RESET — утопленная кнопка */}
+                <circle cx={rightX + 38} cy={ethY + 10} r="2.6" fill="none" stroke="#888" strokeWidth="0.6" />
+                <circle cx={rightX + 38} cy={ethY + 10} r="0.8" fill="#444" />
+                <text x={rightX + 38} y={H - 4} fontSize="3.5" fill="#555" textAnchor="middle" fontWeight="700">RESET</text>
+
+                {/* Блок статусных LED справа */}
+                {(() => {
+                  const lx = rightX + 50;
+                  const labels = [
+                    { name: 'USR',   color: '#f5d600' },
+                    { name: 'FAULT', color: '#d04848' },
+                    { name: 'PWR 2', color: '#22c55e' },
+                    { name: 'PWR 1', color: '#22c55e' },
+                  ];
+                  return (
+                    <g>
+                      {labels.map((l, idx) => (
+                        <g key={l.name}>
+                          <circle cx={lx} cy={10 + idx * 11} r="2" fill={l.color} stroke="#7a7a72" strokeWidth="0.3" />
+                          <text x={lx + 5} y={11.5 + idx * 11} fontSize="3.5" fill="#444" fontWeight="700">{l.name}</text>
+                        </g>
+                      ))}
+                    </g>
+                  );
+                })()}
+
+                {/* Лого + название модели — справа сверху, как на корпусе */}
+                <text x={W - 8} y={18} fontSize="9" fill="#222" textAnchor="end" fontWeight="800" fontFamily="Inter, sans-serif">
+                  Cloud Router Switch
+                </text>
+                <text x={W - 8} y={28} fontSize="5.5" fill="#444" textAnchor="end" fontFamily="Inter, sans-serif" letterSpacing="1">
+                  CRS 317-1G-16S+
+                </text>
+                <text x={W - 8} y={H - 4} fontSize="6" fill="#1a1a1a" textAnchor="end" fontWeight="900" fontFamily="Inter, sans-serif">
+                  MikroTik
+                </text>
+              </g>
+            );
+          })()}
         </svg>
       </div>
       <MockupLegend />
