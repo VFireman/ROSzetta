@@ -817,7 +817,7 @@ function Rb4011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
 // PoE-out на ether10 (помечается жёлтой ★ на корпусе).
 
 function Rb3011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
-  const W = 1000, H = 66;
+  const H = 66;
   const portW = 36, portH = 32, gap = 3;
   const portsY = (H - portH) / 2 - 1;
 
@@ -831,8 +831,10 @@ function Rb3011Mockup({ interfaces }: { interfaces: InterfaceInfo[] }) {
   const ledBlockGap = 6;
   const group2StartX =
     group1StartX + 5 * (portW + gap) - gap + ledBlockGap + ledBlockW + ledBlockGap;
-  const lcdX = group2StartX + 5 * (portW + gap) - gap + 14;
   const lcdSize = 56;
+  const lcdX = group2StartX + 5 * (portW + gap) - gap + 8;
+  // W подбирается под контент: LCD + лого справа. Лого ~92 px (routerboard, fontSize=9).
+  const W = lcdX + lcdSize + 96;
 
   const sfp =
     findPort(interfaces, 'sfp1') ||

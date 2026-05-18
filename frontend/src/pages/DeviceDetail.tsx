@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import {
-  ArrowLeft, RefreshCw, Power, ShieldAlert, Save, Download, Trash2, ArrowUpCircle,
+  ArrowLeft, RefreshCw, Power, Save, Download, Trash2, ArrowUpCircle,
   Wifi, WifiOff, AlertTriangle, Activity as ActivityIcon, Network,
   Globe, HardDrive, Pencil, Cloud, Package, Info,
 } from 'lucide-react';
@@ -97,13 +97,6 @@ export default function DeviceDetail() {
     setActionBusy('reboot'); setActionMsg(null);
     try { await api.post(`/devices/${id}/reboot`); setActionMsg('Команда reboot отправлена'); }
     catch (ex: any) { setActionMsg(ex?.response?.data?.detail ?? 'Ошибка reboot'); }
-    finally { setActionBusy(null); }
-  };
-
-  const safeMode = async () => {
-    setActionBusy('safemode'); setActionMsg(null);
-    try { await api.post(`/devices/${id}/safe-mode`); setActionMsg('Safe mode переключён'); }
-    catch (ex: any) { setActionMsg(ex?.response?.data?.detail ?? 'Ошибка safe mode'); }
     finally { setActionBusy(null); }
   };
 
@@ -226,9 +219,6 @@ export default function DeviceDetail() {
           <div className="flex gap-1.5 flex-wrap justify-end ml-auto">
             <button className="btn-ghost !py-1 !px-2 !text-xs" onClick={() => setEditing(true)}>
               <Pencil size={12} /> Изменить
-            </button>
-            <button className="btn-ghost !py-1 !px-2 !text-xs" onClick={safeMode} disabled={actionBusy !== null}>
-              <ShieldAlert size={12} className={actionBusy === 'safemode' ? 'animate-pulse' : ''} /> Safe Mode
             </button>
             <button className="btn-ghost !py-1 !px-2 !text-xs" onClick={reboot} disabled={actionBusy !== null}>
               <Power size={12} className={actionBusy === 'reboot' ? 'animate-pulse' : ''} /> Reboot
